@@ -14,6 +14,10 @@ using UnityEditor.PackageManager;
 using UnityEngine;
 using UnityObject = UnityEngine.Object;
 
+#if UNITY_6000_0_OR_NEWER
+using UnityEditor.Build;
+#endif
+
 namespace Unity.AutoLOD
 {
     [InitializeOnLoad]
@@ -181,20 +185,20 @@ namespace Unity.AutoLOD
             while (!list.IsCompleted)
                 yield return null;
 
-            PackageStatus status = PackageStatus.Unknown;
+            bool isMeshSimplifierInstalled = false;
             if (list.Status == StatusCode.Success)
             {
                 foreach (var package in list.Result)
                 {
                     if (package.name == "com.whinarn.unitymeshsimplifier")
                     {
-                        status = package.status;
+                        isMeshSimplifierInstalled = true;
                         break;
                     }
                 }
             }
 
-            if (status != PackageStatus.Available
+            if (!isMeshSimplifierInstalled
                 && EditorUtility.DisplayDialog("Install Default Mesh Simplifier?",
                     "You are missing a default mesh simplifier. Would you like to install one?",
                     "Yes", "No"))
@@ -203,28 +207,35 @@ namespace Unity.AutoLOD
                 while (!request.IsCompleted)
                     yield return null;
 
-                switch (request.Status)
-                {
-                    case StatusCode.Success:
-                        status = PackageStatus.Available;
-                        break;
-                    case StatusCode.InProgress:
-                        status = PackageStatus.InProgress;
-                        break;
-                    case StatusCode.Failure:
-                        Debug.LogError($"AutoLOD: {request.Error.message}");
-                        break;
-                }
+                if (request.Status == StatusCode.Success)
+                    isMeshSimplifierInstalled = true;
+                else if (request.Status == StatusCode.Failure)
+                    Debug.LogError($"AutoLOD: {request.Error.message}");
             }
 
-            if (status == PackageStatus.Available)
+            if (isMeshSimplifierInstalled)
             {
-                // Cribbed from ConditionalCompilationUtility
-                // TODO: Remove when minimum version is 2019 LTS and use define constraints instead
+#if UNITY_6000_0_OR_NEWER
+                var namedTarget = NamedBuildTarget.FromBuildTargetGroup(EditorUserBuildSettings.selectedBuildTargetGroup);
+
+                PlayerSettings.GetScriptingDefineSymbols(namedTarget, out string[] defines);
+                var projectDefines = defines.ToList();
+                if (!projectDefines.Contains(k_DefaultMeshSimplifierDefine, StringComparer.OrdinalIgnoreCase))
+                {
+                    EditorApplication.LockReloadAssemblies();
+
+                    projectDefines.Add(k_DefaultMeshSimplifierDefine);
+
+                    PlayerSettings.SetScriptingDefineSymbols(namedTarget, projectDefines.ToArray());
+
+                    yield return null;
+                    EditorApplication.UnlockReloadAssemblies();
+                }
+#else
                 var buildTargetGroup = EditorUserBuildSettings.selectedBuildTargetGroup;
                 if (buildTargetGroup == BuildTargetGroup.Unknown)
                 {
-                    var propertyInfo = typeof(EditorUserBuildSettings).GetProperty("activeBuildTargetGroup", 
+                    var propertyInfo = typeof(EditorUserBuildSettings).GetProperty("activeBuildTargetGroup",
                         BindingFlags.Static | BindingFlags.NonPublic);
                     if (propertyInfo != null)
                         buildTargetGroup = (BuildTargetGroup)propertyInfo.GetValue(null, null);
@@ -241,18 +252,18 @@ namespace Unity.AutoLOD
                     // This will trigger another re-compile, which needs to happen, so all the custom attributes will be visible
                     PlayerSettings.SetScriptingDefineSymbolsForGroup(buildTargetGroup, string.Join(";", projectDefines.ToArray()));
 
-                    // Let other systems execute before reloading assemblies
                     yield return null;
                     EditorApplication.UnlockReloadAssemblies();
                 }
+#endif
             }
-            else if (status != PackageStatus.InProgress)
+            else
             {
                 Debug.LogError("AutoLOD: You must set a valid Default Mesh Simplifier under Edit -> Preferences");
-            }            
+            }
         }
-#endif        
-        
+#endif
+
         static void UpdateDependencies()
         {
 #if HAS_MINIMUM_REQUIRED_VERSION
@@ -683,8 +694,26 @@ namespace Unity.AutoLOD
             }
         }
 
+#if UNITY_6000_0_OR_NEWER
+        [SettingsProvider]
+        static SettingsProvider CreateAutoLODSettingsProvider()
+        {
+            var provider = new SettingsProvider("Preferences/AutoLOD", SettingsScope.User)
+            {
+                guiHandler = (searchContext) =>
+                {
+                    PreferencesGUI();
+                },
+                keywords = new HashSet<string>(new[] { "AutoLOD", "LOD", "Mesh", "Simplifier", "Batcher" })
+            };
+            return provider;
+        }
+
+        static void PreferencesGUI()
+#else
         [PreferenceItem("AutoLOD")]
         static void PreferencesGUI()
+#endif
         {
             EditorGUILayout.BeginVertical();
             EditorGUILayout.Space();
